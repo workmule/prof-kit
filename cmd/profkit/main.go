@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/workmule/prof-kit/fetch"
 	"github.com/workmule/prof-kit/mcp"
@@ -16,7 +17,7 @@ var version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: profkit <serve|mcp|fetch|ctl>  (see README.md)")
+		fmt.Fprintln(os.Stderr, "usage: profkit <serve|mcp|fetch|ctl|version>  (see README.md)")
 		os.Exit(2)
 	}
 	var err error
@@ -29,13 +30,31 @@ func main() {
 		err = fetch.Run(os.Args[2:])
 	case "ctl":
 		err = serve.Ctl(os.Args[2:])
+	case "version":
+		printVersion()
+		return
 	case "ui":
 		err = ui.Run(os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve|mcp|fetch|ctl|ui)", os.Args[1])
+		err = fmt.Errorf("unknown command %q (want serve|mcp|fetch|ctl|ui|version)", os.Args[1])
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "profkit:", err)
 		os.Exit(1)
+	}
+}
+
+// printVersion reports the effective version: ldflags-injected value when built
+// via make, otherwise the VCS revision/time recorded by `go install` builds.
+func printVersion() {
+	fmt.Printf("profkit %s\n", version)
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		fmt.Printf("module:  %s\n", bi.Main.Version)
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision", "vcs.time":
+				fmt.Printf("%s: %s\n", s.Key, s.Value)
+			}
+		}
 	}
 }

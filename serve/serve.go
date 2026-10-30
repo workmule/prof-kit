@@ -4,6 +4,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
@@ -75,17 +76,36 @@ code{background:#f2f3f5;padding:2px 6px;border-radius:4px;font-size:12px;word-br
   <span id="status"></span>
 </form>
 <script>
-document.forms[0].addEventListener('submit', function(){
-  this.querySelector('button').disabled = true;
+document.forms[0].addEventListener('submit', function(ev){
+  ev.preventDefault();
+  var form = this, b = form.querySelector('button');
+  b.disabled = true;
   var st = document.getElementById('status');
-  if (this.type.value !== 'cpu') { st.textContent = '⏳ 采集中...'; return; }
-  var left = parseInt(this.seconds.value) || 0;
-  st.textContent = '⏳ 采集中，剩余 ' + left + 's...';
-  var t = setInterval(function(){
-    left--;
-    if (left <= 0) { clearInterval(t); st.textContent = '📦 生成报告中...'; return; }
-    st.textContent = '⏳ 采集中，剩余 ' + left + 's...';
-  }, 1000);
+  if (form.type.value === 'cpu') {
+    var left = parseInt(form.seconds.value) || 0;
+    var t = setInterval(function(){
+      left--;
+      if (left <= 0) { clearInterval(t); st.textContent = '📦 生成报告中...'; return; }
+      st.textContent = '⏳ 采集中，剩余 ' + left + 's...';
+    }, 1000);
+  } else {
+    st.textContent = '⏳ 采集中...';
+  }
+  fetch('fetch', {method:'POST', body: new FormData(form)})
+    .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+    .then(function(res){
+      clearInterval(t);
+      if (res.ok && res.d.url) { location.href = res.d.url; return; }
+      b.disabled = false;
+      st.textContent = '❌ 采集失败';
+      alert('采集失败：\n' + (res.d.error || ('HTTP ' + res.ok)));
+    })
+    .catch(function(e){
+      clearInterval(t);
+      b.disabled = false;
+      st.textContent = '❌ 请求异常';
+      alert('请求异常：' + e);
+    });
 });
 </script>
 <h2>已采集（最多保留 8 份，新采集自动淘汰最旧）</h2>
@@ -136,6 +156,7 @@ func Run(args []string) error {
 	maxSec := fs.Int("max-cpu-seconds", core.MaxCPUSeconds, "max CPU profile seconds")
 	fs.Parse(args)
 	core.MaxCPUSeconds = *maxSec
+	rebuildViews(*tmp) // 重启后从存储目录重建 view 注册表，并清理超量旧文件
 
 	if *addr == "" {
 		// 同 ui 包的做法：新版环境里写死端口易冲突，未显式指定就挑空闲端口。
@@ -187,17 +208,25 @@ func serveFetch(w http.ResponseWriter, r *http.Request, tmp string) {
 	setCookie(w, "pk_seconds", secs)
 	setCookie(w, "pk_task", task)
 	seconds, _ := strconv.Atoi(secs)
-	path, err := core.Fetch(target, kind, seconds, tmp, r.FormValue("task"))
+	path, err := core.Fetch(target, kind, seconds, tmp, task)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		jsonError(w, err.Error())
 		return
 	}
 	id, err := mountView(path)
 	if err != nil {
-		fmt.Fprintf(w, "profile saved: %s\nbut web UI failed: %v\nanalyze manually: go tool pprof -http=:0 %s\n", path, err, path)
+		jsonError(w, fmt.Sprintf("profile 已保存: %s，但分析页挂载失败: %v（可手动 go tool pprof -http=:0 %s）", path, err, path))
 		return
 	}
-	http.Redirect(w, r, "view/"+id+"/", http.StatusSeeOther) // relative: works under -b base path too
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"url": "view/" + id + "/"}) // 相对路径，-b base path 下同样有效
+}
+
+// jsonError: 表单用 fetch API 提交，失败以 JSON 返回给前端弹框展示
+func jsonError(w http.ResponseWriter, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func serveProxy(w http.ResponseWriter, r *http.Request, tmp string) {

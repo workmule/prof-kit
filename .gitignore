@@ -8,8 +8,11 @@ docs/**
 testcase
 todo.md
 .mcp.json
+.env
+.ci/**
 
 # 过滤生成的中间文件
 output
 reports
 /profkit
+logs/**

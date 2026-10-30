@@ -129,8 +129,6 @@ mcp:
 fetch:
 	@$(GO) run . fetch $(UIFLAG) $(OPENFLAG) -o $(REPORTS)/profkit-report-$(KIND)-$(shell date +%Y%m%d%H%M%S).html -kind $(KIND) -d $(D) $(TARGET) $(EXTRA)
 
-
-
 # 安装到 $GOBIN（或 $GOPATH/bin），之后可直接 profkit ... 调用
 .PHONY: install
 install:

@@ -1,41 +1,38 @@
-// Package ui serves the official pprof web UI for saved profiles by shelling
-// out to `go tool pprof -http` — same UI pprof-web exposes (it also just wraps
-// google/pprof), without re-implementing the driver glue.
+// Package ui serves the official pprof web UI for saved profiles, embedded
+// in-process via the webui package (no subprocess, no Go toolchain needed at
+// runtime).
 package ui
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"net"
-	"os"
-	"os/exec"
-	"strings"
+
+	"profkit/webui"
 )
 
-// Run launches the official pprof web UI for the given profile file(s).
-// Extra args pass through (e.g. -http=:8123 to pin a port). Blocks until stopped.
+// Run launches the official pprof web UI for the given profile file.
+// Optional args: -http=host:port to pin the address. Blocks until stopped.
 func Run(args []string) error {
-	goBin, err := exec.LookPath("go")
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	addr := fs.String("http", "localhost:0", "listen address (`:0` = pick a free port)")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		return errors.New("usage: profkit ui [-http=host:port] <profile.pb.gz>")
+	}
+	path := fs.Arg(0)
+
+	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
-		return fmt.Errorf("'go' not in PATH: the pprof web UI comes from the Go toolchain; %w", err)
+		return err
 	}
-	hasHTTP := false
-	for _, a := range args {
-		if a == "-http" || strings.HasPrefix(a, "-http=") {
-			hasHTTP = true
-		}
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "127.0.0.1" {
+		host = "localhost"
 	}
-	if !hasHTTP {
-		// ponytail: newer pprof no longer resolves -http=:0, so grab a free
-		// port ourselves (tiny TOCTOU race, fine for a local viewer).
-		l, err := net.Listen("tcp", "localhost:0")
-		if err != nil {
-			return err
-		}
-		port := l.Addr().(*net.TCPAddr).Port
-		l.Close()
-		args = append([]string{fmt.Sprintf("-http=localhost:%d", port)}, args...)
-	}
-	cmd := exec.Command(goBin, append([]string{"tool", "pprof"}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	url := fmt.Sprintf("http://%s:%s/", host, port)
+	fmt.Printf("official pprof web UI on %s (Ctrl-C to stop)\n", url)
+	webui.OpenBrowser(url)
+	return webui.Serve(ln, path)
 }

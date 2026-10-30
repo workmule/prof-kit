@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,25 +24,75 @@ const formHTML = `<!doctype html>
 <html><head><title>profkit serve</title></head><body>
 <h1>profkit serve</h1>
 <form method="POST" action="fetch">
-  target: <input name="target" placeholder="127.0.0.1:6060" required>
+  target: <input name="target" value="{{.Target}}" required>
   type: <select name="type">
-    <option>cpu</option><option>heap</option><option>goroutine</option><option>allocs</option>
-  </select>
-  seconds (cpu only): <input name="seconds" value="30" size="4">
-  <button>fetch</button>
+    {{range $t := .Types}}<option {{if eq $t $.Type}}selected{{end}}>{{$t}}</option>
+    {{end}}</select>
+  seconds (cpu only): <input name="seconds" value="{{.Seconds}}" size="4">
+  <button>fetch</button> <span id="status" style="color:#888"></span>
 </form>
+<script>
+document.forms[0].addEventListener('submit', function(){
+  this.querySelector('button').disabled = true;
+  var st = document.getElementById('status');
+  if (this.type.value !== 'cpu') { st.textContent = '采集中...'; return; }
+  var left = parseInt(this.seconds.value) || 0;
+  st.textContent = '采集中，剩余 ' + left + 's...';
+  var t = setInterval(function(){
+    left--;
+    if (left <= 0) { clearInterval(t); st.textContent = '生成报告中...'; return; }
+    st.textContent = '采集中，剩余 ' + left + 's...';
+  }, 1000);
+});
+</script>
 <p>Direct proxy: <code>{{.Base}}proxy/{ip}/{port}/debug/pprof/heap</code></p>
 </body></html>`
+
+// formData is the render model: values come from cookies (last submission)
+// with fixed fallback defaults.
+var formKinds = []string{"cpu", "heap", "goroutine", "allocs"}
+
+func formData(r *http.Request, base string) map[string]any {
+	return map[string]any{
+		"Base":    base,
+		"Target":  cookieOr(r, "pk_target", "127.0.0.1:8091"),
+		"Type":    cookieOr(r, "pk_type", "cpu"),
+		"Seconds": cookieOr(r, "pk_seconds", "30"),
+		"Types":   formKinds,
+	}
+}
+
+func cookieOr(r *http.Request, name, def string) string {
+	if c, err := r.Cookie(name); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return def
+}
+
+func setCookie(w http.ResponseWriter, name, val string) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", MaxAge: 2592000}) // 30d
+}
 
 // Run parses flags from args and blocks serving until error.
 func Run(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("l", envOr("PPROF_LISTEN_ADDRESS", ":8080"), "listen address")
+	addr := fs.String("l", envOr("PPROF_LISTEN_ADDRESS", ""), `listen address (empty = auto-pick a free port, bound to localhost)`)
 	tmp := fs.String("t", envOr("PPROF_TMP_PATH", "/tmp/pprof-web"), "profile storage dir")
 	base := fs.String("b", envOr("PPROF_BASE_PATH", "/"), "base path when behind a reverse proxy")
 	maxSec := fs.Int("max-cpu-seconds", core.MaxCPUSeconds, "max CPU profile seconds")
 	fs.Parse(args)
 	core.MaxCPUSeconds = *maxSec
+
+	if *addr == "" {
+		// 同 ui 包的做法：新版环境里写死端口易冲突，未显式指定就挑空闲端口。
+		// 对外统一显示 localhost（Addr() 会给 127.0.0.1，语义相同但难读）
+		l, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			return err
+		}
+		*addr = fmt.Sprintf("localhost:%d", l.Addr().(*net.TCPAddr).Port)
+		l.Close()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") })
@@ -51,9 +102,10 @@ func Run(args []string) error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		template.Must(template.New("f").Parse(formHTML)).Execute(w, map[string]string{"Base": *base})
+		template.Must(template.New("f").Parse(formHTML)).Execute(w, formData(r, *base))
 	})
 	mux.HandleFunc("POST /fetch", func(w http.ResponseWriter, r *http.Request) { serveFetch(w, r, *tmp) })
+	mux.HandleFunc("GET /view/{rest...}", viewHandler)
 	mux.HandleFunc("GET /proxy/{host}/{port}/debug/pprof/{rest...}", func(w http.ResponseWriter, r *http.Request) {
 		serveProxy(w, r, *tmp)
 	})
@@ -62,7 +114,7 @@ func Run(args []string) error {
 	if *base != "/" {
 		h = http.StripPrefix(strings.TrimSuffix(*base, "/"), mux)
 	}
-	fmt.Printf("profkit serve on %s (storage %s, base %s)\n", *addr, *tmp, *base)
+	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\n", *addr, *tmp, *base, *addr)
 	return http.ListenAndServe(*addr, h)
 }
 
@@ -74,18 +126,22 @@ func envOr(key, def string) string {
 }
 
 func serveFetch(w http.ResponseWriter, r *http.Request, tmp string) {
-	seconds, _ := strconv.Atoi(r.FormValue("seconds"))
-	path, err := core.Fetch(r.FormValue("target"), r.FormValue("type"), seconds, tmp)
+	target, kind, secs := r.FormValue("target"), r.FormValue("type"), r.FormValue("seconds")
+	setCookie(w, "pk_target", target)
+	setCookie(w, "pk_type", kind)
+	setCookie(w, "pk_seconds", secs)
+	seconds, _ := strconv.Atoi(secs)
+	path, err := core.Fetch(target, kind, seconds, tmp)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	rep, err := core.Top(path, 20)
+	id, err := mountView(path)
 	if err != nil {
-		rep = "(top failed: " + err.Error() + ")\n"
+		fmt.Fprintf(w, "profile saved: %s\nbut web UI failed: %v\nanalyze manually: go tool pprof -http=:0 %s\n", path, err, path)
+		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "saved: %s\nanalyze: go tool pprof -http=:0 %s\n\n%s\n", path, path, rep)
+	http.Redirect(w, r, "view/"+id+"/", http.StatusSeeOther) // relative: works under -b base path too
 }
 
 func serveProxy(w http.ResponseWriter, r *http.Request, tmp string) {

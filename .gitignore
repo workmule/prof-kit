@@ -10,4 +10,5 @@ todo.md
 
 # 过滤生成的中间文件
 output
-gitsparse
+reports
+profkit

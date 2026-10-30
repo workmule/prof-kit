@@ -6,15 +6,16 @@ Go 服务性能采集与分析工具箱。一个二进制（`profkit`），两�
 
 ## 技术方案
 
-核心判断：**profile 分析核心全部来自 [google/pprof](https://github.com/google/pprof) 库**，本项目只写"壳"——一个 core 包 + 两个薄皮形态：
+核心判断：**profile 分析核心全部来自 [google/pprof](https://github.com/google/pprof) 库**，本项目只写"壳"——一个 core 包 + 三个薄皮形态：
 
 ```
 core 包（fetch + pprof 库分析输出）
 ├── profkit serve    Web 服务（参考 pprof-web，含路径白名单防 SSRF）
-└── profkit mcp      MCP server（fetch_profile / top / flamegraph_data / goroutines）
+├── profkit mcp      MCP server（fetch_profile / top / flamegraph_data / goroutines）
+└── profkit fetch    一次性采集 → 自包含 HTML 报告（top + 火焰图 SVG，本地可看）
 ```
 
-不做交互 CLI：`go tool pprof` 本身就是现成的交互式分析工具（`go tool pprof http://<ip>:<port>/debug/pprof/heap` 直接可用），自写 CLI 与其完全重合，无增量价值。确有"一个命令采集落盘"需求时再补 `profkit fetch` 子命令。
+不做交互式 CLI（`go tool pprof` 已覆盖），只保留 `fetch` 一次性子命令。
 
 - 代理路径 `/proxy/{ip}/{port}/debug/pprof/`，仅放行标准 pprof 路径白名单（防开放中继/SSRF）
 - 支持三种 profile：CPU（默认上限 60s，可配置加长）、heap、goroutine
@@ -38,6 +39,16 @@ profkit mcp
 
 # MCP 远程模式（Streamable HTTP，供远程客户端接入）
 profkit mcp --http :9090
+
+# 一次性采集并生成 HTML 报告（火焰图 + top，本地双击可看，-open 自动打开浏览器）
+profkit fetch 127.0.0.1:6060 cpu -d 30
+profkit fetch 127.0.0.1:6060            # 默认 heap
+
+# 采集后直接拉起官方 pprof WebUI（维度切换/调用图/源码视图，Ctrl-C 停止）
+profkit fetch -ui 127.0.0.1:6060 cpu -d 30
+
+# 对已保存的 profile 起官方 WebUI
+profkit ui /tmp/pprof-web/heap_xxx.pb.gz
 
 # 命令行直接分析（无需 profkit，go tool pprof 原生支持）
 go tool pprof http://<ip>:<port>/debug/pprof/heap

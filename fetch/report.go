@@ -13,12 +13,8 @@ import (
 // Report renders a self-contained interactive HTML report: sample-type
 // dropdown, click-to-zoom flame graph, hover details, sortable top table.
 // Vanilla JS inline — no CDN, no network, works offline from a local file.
-func Report(kind, target, topText string, data []core.SampleTypeData) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(true) // escape </script> etc. inside profile names
-	enc.Encode(data)
-	return fmt.Sprintf(`<!doctype html>
+// reportTmpl 是报告 HTML 模板，提为常量避免 funlen 超限（模板主体非逻辑）。
+const reportTmpl = `<!doctype html>
 <html><head><meta charset="utf-8"><title>profkit %s %s</title>
 <style>
 body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;background:#fafafa;color:#222}
@@ -134,7 +130,15 @@ $('rz').onclick = ()=>{ zoomNode=null; renderFlame(); renderTop(); };
 renderAll();
 </script>
 </body></html>
-`, html.EscapeString(kind), html.EscapeString(target),
+`
+
+func Report(kind, target, topText string, data []core.SampleTypeData) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(true) // escape </script> etc. inside profile names
+	enc.Encode(data)
+	return fmt.Sprintf(reportTmpl,
+		html.EscapeString(kind), html.EscapeString(target),
 		html.EscapeString(kind), html.EscapeString(target),
 		html.EscapeString(topText), strings.TrimRight(buf.String(), "\n"))
 }

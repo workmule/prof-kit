@@ -7,6 +7,7 @@ docs/**
 # 个人测试用例
 testcase
 todo.md
+.mcp.json
 
 # 过滤生成的中间文件
 output

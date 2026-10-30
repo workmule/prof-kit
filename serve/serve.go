@@ -18,7 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"profkit/core"
+	"github.com/workmule/prof-kit/core"
+	profkitmcp "github.com/workmule/prof-kit/mcp"
 )
 
 const formHTML = `<!doctype html>
@@ -108,7 +109,7 @@ document.forms[0].addEventListener('submit', function(ev){
     });
 });
 </script>
-<h2>已采集（最多保留 8 份，新采集自动淘汰最旧）</h2>
+<h2>已采集（超出保留数自动淘汰最旧，PPROF_MAX_PROFILES 可配，默认 30）</h2>
 {{if .Views}}<ul>{{range .Views}}<li><a href="view/{{.}}/">📁 {{.}}</a></li>{{end}}</ul>
 {{else}}<span class="empty">暂无 — 采集后这里会出现可回看的入口</span>{{end}}
 </div>
@@ -116,7 +117,7 @@ document.forms[0].addEventListener('submit', function(ev){
 
 // formData is the render model: values come from cookies (last submission)
 // with fixed fallback defaults.
-var formKinds = []string{"cpu", "heap", "goroutine", "allocs"}
+var formKinds = []string{"cpu", "heap", "goroutine", "allocs", "block", "mutex"}
 
 func formData(r *http.Request, base string) map[string]any {
 	viewMu.Lock()
@@ -148,7 +149,9 @@ func setCookie(w http.ResponseWriter, name, val string) {
 }
 
 // Run parses flags from args and blocks serving until error.
-func Run(args []string) error {
+// version is the build-injected version string (see Makefile), passed to the
+// MCP server mounted at /mcp.
+func Run(args []string, version string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("l", envOr("PPROF_LISTEN_ADDRESS", ""), `listen address (empty = auto-pick a free port, bound to localhost)`)
 	tmp := fs.String("t", envOr("PPROF_TMP_PATH", "/tmp/pprof-web"), "profile storage dir")
@@ -171,7 +174,9 @@ func Run(args []string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") })
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	// {$} = 精确匹配根路径，避免与无方法限定的 /mcp（POST/GET/DELETE）产生
+	// ServeMux 模式冲突
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -184,12 +189,15 @@ func Run(args []string) error {
 	mux.HandleFunc("GET /proxy/{host}/{port}/debug/pprof/{rest...}", func(w http.ResponseWriter, r *http.Request) {
 		serveProxy(w, r, *tmp)
 	})
+	// MCP over streamable HTTP, same tools as `profkit mcp` (stdio).
+	// No method pattern: the transport uses POST/GET/DELETE on one path.
+	mux.Handle("/mcp", profkitmcp.HTTPHandler(version, *tmp))
 
 	var h http.Handler = mux
 	if *base != "/" {
 		h = http.StripPrefix(strings.TrimSuffix(*base, "/"), mux)
 	}
-	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\n", *addr, *tmp, *base, *addr)
+	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\nMCP:    http://%s/mcp\n", *addr, *tmp, *base, *addr, *addr)
 	return http.ListenAndServe(*addr, h)
 }
 

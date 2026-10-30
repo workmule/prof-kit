@@ -1,4 +1,4 @@
-module profkit
+module github.com/workmule/prof-kit
 
 go 1.26.0
 

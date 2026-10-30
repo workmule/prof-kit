@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"time"
 
-	"profkit/core"
-	"profkit/ui"
+	"github.com/workmule/prof-kit/core"
+	"github.com/workmule/prof-kit/ui"
 )
 
 // Run parses args ("profkit fetch <ip:port> [kind] -d N") and blocks during collection.
@@ -44,7 +44,7 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("profile saved to %s but parse failed: %w", path, err)
 	}
-	top, err := core.Top(path, 30)
+	top, err := core.Top(path, 30, "")
 	if err != nil {
 		top = "(top failed: " + err.Error() + ")\n"
 	}

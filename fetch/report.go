@@ -7,7 +7,7 @@ import (
 	"html"
 	"strings"
 
-	"profkit/core"
+	"github.com/workmule/prof-kit/core"
 )
 
 // Report renders a self-contained interactive HTML report: sample-type

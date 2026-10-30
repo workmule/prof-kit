@@ -14,10 +14,13 @@ import (
 	"strings"
 	"sync"
 
-	"profkit/webui"
+	"github.com/workmule/prof-kit/core"
+	"github.com/workmule/prof-kit/webui"
 )
 
-const maxViews = 8 // // ponytail: fixed-cap FIFO — enough for a compare session; bump if needed
+// ponytail: single retention knob shared with core (PPROF_MAX_PROFILES) —
+// one dir, one policy; bump env var if a compare session needs more.
+var maxViews = core.MaxProfiles
 
 var (
 	viewMu     sync.Mutex

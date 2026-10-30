@@ -104,7 +104,7 @@ check: fmt vet lint mod-tidy-check
 .PHONY: build
 build: check
 	@echo ">> [build] 编译 $(BIN) $(VERSION)"
-	@$(GO) build -ldflags "-X main.version=$(VERSION)-$$(date +%Y%m%d%H%M%S)" -o $(BIN) .
+	@$(GO) build -ldflags "-X main.version=$(VERSION)-$$(date +%Y%m%d%H%M%S)" -o $(BIN) ./cmd/profkit
 
 # 全量测试
 .PHONY: test
@@ -119,20 +119,20 @@ test-short:
 # 本地运行: make serve / make mcp（ARGS 透传, 如 ARGS="-l :9090"）
 .PHONY: serve mcp
 serve:
-	@$(GO) run . serve $(ARGS)
+	@$(GO) run ./cmd/profkit serve $(ARGS)
 mcp:
-	@$(GO) run . mcp $(ARGS)
+	@$(GO) run ./cmd/profkit mcp $(ARGS)
 
 # 一次性采集（默认拉起官方 pprof WebUI；UI=false 则只生成 HTML 报告）
 # 用法: make fetch [TARGET=127.0.0.1:8091] [KIND=cpu] [D=5] [UI=false] [OPEN=true] [EXTRA="-t /tmp/x"]
 .PHONY: fetch
 fetch:
-	@$(GO) run . fetch $(UIFLAG) $(OPENFLAG) -o $(REPORTS)/profkit-report-$(KIND)-$(shell date +%Y%m%d%H%M%S).html -kind $(KIND) -d $(D) $(TARGET) $(EXTRA)
+	@$(GO) run ./cmd/profkit fetch $(UIFLAG) $(OPENFLAG) -o $(REPORTS)/profkit-report-$(KIND)-$(shell date +%Y%m%d%H%M%S).html -kind $(KIND) -d $(D) $(TARGET) $(EXTRA)
 
 # 安装到 $GOBIN（或 $GOPATH/bin），之后可直接 profkit ... 调用
 .PHONY: install
 install:
-	@$(GO) install -ldflags "-X main.version=$(VERSION)-$$(date +%Y%m%d%H%M%S)" .
+	@$(GO) install -ldflags "-X main.version=$(VERSION)-$$(date +%Y%m%d%H%M%S)" ./cmd/profkit
 
 .PHONY: clean
 clean:

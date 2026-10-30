@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"profkit/fetch"
-	"profkit/mcp"
-	"profkit/serve"
-	"profkit/ui"
+	"github.com/workmule/prof-kit/fetch"
+	"github.com/workmule/prof-kit/mcp"
+	"github.com/workmule/prof-kit/serve"
+	"github.com/workmule/prof-kit/ui"
 )
 
 // version injected at build time via -ldflags "-X main.version=..." (see Makefile).
@@ -22,7 +22,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "serve":
-		err = serve.Run(os.Args[2:])
+		err = serve.Run(os.Args[2:], version)
 	case "mcp":
 		err = mcp.Run(os.Args[2:], version)
 	case "fetch":

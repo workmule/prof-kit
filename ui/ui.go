@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"net"
 
-	"profkit/webui"
+	"github.com/workmule/prof-kit/webui"
 )
 
 // Run launches the official pprof web UI for the given profile file.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"profkit/core"
+	"github.com/workmule/prof-kit/core"
 )
 
 func goroutineProfileBytes(t *testing.T) []byte {

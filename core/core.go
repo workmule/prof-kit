@@ -43,8 +43,9 @@ func ProfileURL(target, ptype, query string) (string, error) {
 var fetchKinds = map[string]bool{"cpu": true, "heap": true, "goroutine": true, "allocs": true}
 
 // Fetch pulls one profile from target ("host:port") and saves it under dir.
-// Returns the saved file path.
-func Fetch(target, kind string, seconds int, dir string) (string, error) {
+// task is an optional label (sanitized) prefixed to the file name to
+// distinguish collections; empty means auto naming. Returns the saved path.
+func Fetch(target, kind string, seconds int, dir, task string) (string, error) {
 	if !fetchKinds[kind] {
 		return "", fmt.Errorf("unsupported profile kind %q (want cpu|heap|goroutine|allocs)", kind)
 	}
@@ -77,6 +78,9 @@ func Fetch(target, kind string, seconds int, dir string) (string, error) {
 		return "", err
 	}
 	name := fmt.Sprintf("%s_%s_%s.pb.gz", kind, strings.ReplaceAll(target, ":", "_"), time.Now().Format("20060102_150405"))
+	if task != "" {
+		name = sanitizeTask(task) + "_" + name
+	}
 	path := filepath.Join(dir, name)
 	f, err := os.Create(path)
 	if err != nil {
@@ -217,6 +221,20 @@ func FlameData(path string) ([]SampleTypeData, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// sanitizeTask keeps only filename-safe chars; anything else becomes '_'.
+func sanitizeTask(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
 }
 
 func walkStack(root *TreeNode, locations []*profile.Location, v int64) {

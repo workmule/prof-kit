@@ -21,31 +21,77 @@ import (
 )
 
 const formHTML = `<!doctype html>
-<html><head><title>profkit serve</title></head><body>
-<h1>profkit serve</h1>
+<html><head><meta charset="utf-8"><title>profkit serve</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f3f5f7;color:#1d2129;display:flex;justify-content:center;padding:40px 16px}
+.card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:28px 32px;width:100%;max-width:640px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:#86909c;font-size:13px;margin:0 0 24px}
+.field{margin-bottom:16px}
+label{display:block;font-size:13px;color:#4e5969;margin-bottom:6px}
+input,select{width:100%;padding:9px 12px;border:1px solid #e5e6eb;border-radius:8px;font-size:14px;background:#fff;outline:none;transition:border .2s}
+input:focus,select:focus{border-color:#165dff}
+.row{display:flex;gap:12px}
+.row .field{flex:1}
+button{width:100%;padding:10px 0;border:none;border-radius:8px;background:#165dff;color:#fff;font-size:15px;cursor:pointer;transition:background .2s;margin-top:4px}
+button:hover{background:#4080ff}
+button:disabled{background:#94bfff;cursor:not-allowed}
+#status{display:block;margin-top:12px;font-size:13px;color:#86909c;min-height:18px}
+h2{font-size:14px;color:#4e5969;margin:28px 0 10px}
+ul{list-style:none;margin:0;padding:0}
+li{margin:0}
+li a{display:block;padding:8px 12px;border-radius:8px;color:#1d2129;text-decoration:none;font-family:monospace;font-size:13px;background:#f7f8fa;margin-bottom:6px;transition:background .15s}
+li a:hover{background:#e8f0ff}
+.empty{color:#c9cdd4;font-size:13px}
+code{background:#f2f3f5;padding:2px 6px;border-radius:4px;font-size:12px;word-break:break-all}
+</style></head><body>
+<div class="card">
+<h1>⚡ profkit serve</h1>
+<p class="sub">Go 服务性能采集与分析 — 采集完成自动打开官方 pprof 分析页</p>
 <form method="POST" action="fetch">
-  target: <input name="target" value="{{.Target}}" required>
-  type: <select name="type">
-    {{range $t := .Types}}<option {{if eq $t $.Type}}selected{{end}}>{{$t}}</option>
-    {{end}}</select>
-  seconds (cpu only): <input name="seconds" value="{{.Seconds}}" size="4">
-  <button>fetch</button> <span id="status" style="color:#888"></span>
+  <div class="field">
+    <label>目标服务 (ip:port)</label>
+    <input name="target" value="{{.Target}}" required>
+    <p style="margin:6px 0 0;font-size:12px;color:#86909c">也可直接代理访问：<code>{{.Base}}proxy/{ip}/{port}/debug/pprof/heap</code>（可喂给 go tool pprof）</p>
+  </div>
+  <div class="field">
+    <label>任务名（可选，用于区分采集文件）</label>
+    <input name="task" value="{{.Task}}" placeholder="如 gateway-压测-1">
+  </div>
+  <div class="row">
+    <div class="field">
+      <label>类型</label>
+      <select name="type">
+        {{range $t := .Types}}<option {{if eq $t $.Type}}selected{{end}}>{{$t}}</option>
+        {{end}}</select>
+    </div>
+    <div class="field">
+      <label>时长（仅 cpu）</label>
+      <input name="seconds" value="{{.Seconds}}">
+    </div>
+  </div>
+  <button>开始采集</button>
+  <span id="status"></span>
 </form>
 <script>
 document.forms[0].addEventListener('submit', function(){
   this.querySelector('button').disabled = true;
   var st = document.getElementById('status');
-  if (this.type.value !== 'cpu') { st.textContent = '采集中...'; return; }
+  if (this.type.value !== 'cpu') { st.textContent = '⏳ 采集中...'; return; }
   var left = parseInt(this.seconds.value) || 0;
-  st.textContent = '采集中，剩余 ' + left + 's...';
+  st.textContent = '⏳ 采集中，剩余 ' + left + 's...';
   var t = setInterval(function(){
     left--;
-    if (left <= 0) { clearInterval(t); st.textContent = '生成报告中...'; return; }
-    st.textContent = '采集中，剩余 ' + left + 's...';
+    if (left <= 0) { clearInterval(t); st.textContent = '📦 生成报告中...'; return; }
+    st.textContent = '⏳ 采集中，剩余 ' + left + 's...';
   }, 1000);
 });
 </script>
-<p>Direct proxy: <code>{{.Base}}proxy/{ip}/{port}/debug/pprof/heap</code></p>
+<h2>已采集（最多保留 8 份，新采集自动淘汰最旧）</h2>
+{{if .Views}}<ul>{{range .Views}}<li><a href="view/{{.}}/">📁 {{.}}</a></li>{{end}}</ul>
+{{else}}<span class="empty">暂无 — 采集后这里会出现可回看的入口</span>{{end}}
+</div>
 </body></html>`
 
 // formData is the render model: values come from cookies (last submission)
@@ -53,12 +99,20 @@ document.forms[0].addEventListener('submit', function(){
 var formKinds = []string{"cpu", "heap", "goroutine", "allocs"}
 
 func formData(r *http.Request, base string) map[string]any {
+	viewMu.Lock()
+	views := make([]string, 0, len(viewLRU))
+	for i := len(viewLRU) - 1; i >= 0; i-- { // newest first
+		views = append(views, viewLRU[i])
+	}
+	viewMu.Unlock()
 	return map[string]any{
 		"Base":    base,
 		"Target":  cookieOr(r, "pk_target", "127.0.0.1:8091"),
 		"Type":    cookieOr(r, "pk_type", "cpu"),
 		"Seconds": cookieOr(r, "pk_seconds", "30"),
+		"Task":    cookieOr(r, "pk_task", "default"),
 		"Types":   formKinds,
+		"Views":   views,
 	}
 }
 
@@ -127,11 +181,13 @@ func envOr(key, def string) string {
 
 func serveFetch(w http.ResponseWriter, r *http.Request, tmp string) {
 	target, kind, secs := r.FormValue("target"), r.FormValue("type"), r.FormValue("seconds")
+	task := r.FormValue("task")
 	setCookie(w, "pk_target", target)
 	setCookie(w, "pk_type", kind)
 	setCookie(w, "pk_seconds", secs)
+	setCookie(w, "pk_task", task)
 	seconds, _ := strconv.Atoi(secs)
-	path, err := core.Fetch(target, kind, seconds, tmp)
+	path, err := core.Fetch(target, kind, seconds, tmp, r.FormValue("task"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

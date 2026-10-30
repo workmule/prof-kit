@@ -36,7 +36,7 @@ func Run(args []string) error {
 		*kind = fs.Arg(1) // positional kind wins over flag (matches docs syntax)
 	}
 
-	path, err := core.Fetch(target, *kind, *secs, *tmp)
+	path, err := core.Fetch(target, *kind, *secs, *tmp, "")
 	if err != nil {
 		return err
 	}

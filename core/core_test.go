@@ -49,7 +49,7 @@ func TestFetchTopTree(t *testing.T) {
 	defer srv.Close()
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	path, err := Fetch(host, "goroutine", 0, t.TempDir())
+	path, err := Fetch(host, "goroutine", 0, t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestFetchTopTree(t *testing.T) {
 }
 
 func TestFetchRejectsBadKind(t *testing.T) {
-	if _, err := Fetch("127.0.0.1:1", "trace", 0, t.TempDir()); err == nil {
+	if _, err := Fetch("127.0.0.1:1", "trace", 0, t.TempDir(), ""); err == nil {
 		t.Error("Fetch accepted non-fetchable kind")
 	}
 }
@@ -96,7 +96,7 @@ func TestCPUCapped(t *testing.T) {
 	MaxCPUSeconds = 60
 	defer func() { MaxCPUSeconds = old }()
 
-	path, err := Fetch(host, "cpu", 9999, t.TempDir())
+	path, err := Fetch(host, "cpu", 9999, t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

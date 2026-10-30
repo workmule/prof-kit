@@ -62,6 +62,7 @@ type fetchIn struct {
 	Target  string `json:"target" jsonschema:"host:port of the Go service"`
 	Kind    string `json:"kind" jsonschema:"cpu, heap, goroutine or allocs"`
 	Seconds int    `json:"seconds,omitempty" jsonschema:"cpu profile duration in seconds (default 30)"`
+	Task    string `json:"task,omitempty" jsonschema:"optional label prefixed to the saved file name"`
 }
 
 type fetchOut struct {
@@ -69,7 +70,7 @@ type fetchOut struct {
 }
 
 func fetchTool(ctx context.Context, req *mcp.CallToolRequest, in fetchIn) (*mcp.CallToolResult, fetchOut, error) {
-	path, err := core.Fetch(in.Target, in.Kind, in.Seconds, envOr("PPROF_TMP_PATH", "/tmp/pprof-web"))
+	path, err := core.Fetch(in.Target, in.Kind, in.Seconds, envOr("PPROF_TMP_PATH", "/tmp/pprof-web"), in.Task)
 	if err != nil {
 		return nil, fetchOut{}, err
 	}
@@ -127,7 +128,7 @@ type goroutinesOut struct {
 // goroutinesTool needs the storage dir, so it is built as a closure.
 func goroutinesTool(tmp string) mcp.ToolHandlerFor[goroutinesIn, goroutinesOut] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in goroutinesIn) (*mcp.CallToolResult, goroutinesOut, error) {
-		path, err := core.Fetch(in.Target, "goroutine", 0, tmp)
+		path, err := core.Fetch(in.Target, "goroutine", 0, tmp, "")
 		if err != nil {
 			return nil, goroutinesOut{}, err
 		}

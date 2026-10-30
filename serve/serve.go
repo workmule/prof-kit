@@ -13,9 +13,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/workmule/prof-kit/core"
@@ -157,9 +160,18 @@ func Run(args []string, version string) error {
 	tmp := fs.String("t", envOr("PPROF_TMP_PATH", "/tmp/pprof-web"), "profile storage dir")
 	base := fs.String("b", envOr("PPROF_BASE_PATH", "/"), "base path when behind a reverse proxy")
 	maxSec := fs.Int("max-cpu-seconds", core.MaxCPUSeconds, "max CPU profile seconds")
+	daemon := fs.Bool("d", false, "run in background: detach from terminal, log to <storage>/profkit.log (manage via `profkit ctl`)")
+	ctlSock := fs.String("ctl-sock", "", "unix socket path for ctl commands (default <storage>/profkit.sock); cli 侧用 profkit ctl -sock 对应")
 	fs.Parse(args)
 	core.MaxCPUSeconds = *maxSec
 	rebuildViews(*tmp) // 重启后从存储目录重建 view 注册表，并清理超量旧文件
+
+	if *daemon {
+		if err := checkAlreadyRunning(*tmp, *ctlSock); err != nil {
+			return err
+		}
+		return detach(args, *tmp)
+	}
 
 	if *addr == "" {
 		// 同 ui 包的做法：新版环境里写死端口易冲突，未显式指定就挑空闲端口。
@@ -193,12 +205,200 @@ func Run(args []string, version string) error {
 	// No method pattern: the transport uses POST/GET/DELETE on one path.
 	mux.Handle("/mcp", profkitmcp.HTTPHandler(version, *tmp))
 
-	var h http.Handler = mux
-	if *base != "/" {
-		h = http.StripPrefix(strings.TrimSuffix(*base, "/"), mux)
+	// —— 监听器获取：restart 传递（fd 继承）或全新创建 ——
+	inherited := os.Getenv(inheritEnv) == "3,4,5"
+	var tcpLn net.Listener
+	var ctlLn net.Listener
+	if inherited {
+		var err error
+		if tcpLn, err = inheritListener(3, "tcp"); err != nil {
+			return err
+		}
+		if ctlLn, err = inheritListener(4, "ctl"); err != nil {
+			return err
+		}
+		if ul, ok := ctlLn.(*net.UnixListener); ok {
+			ul.SetUnlinkOnClose(false) // 文件由父进程创建，关闭时不删除
+		}
 	}
+
+	// 管控通道：unix socket（本机文件权限天然隔离，不经 TCP 暴露）。
+	sock := *ctlSock
+	if sock == "" {
+		sock = filepath.Join(*tmp, defaultCtlSock)
+	}
+
+	// -b base path：反代把 /<base>/... 转进来时先剥前缀再进业务 mux
+	var root http.Handler = mux
+	if *base != "/" {
+		root = http.StripPrefix(strings.TrimSuffix(*base, "/"), mux)
+	}
+	httpSrv := &http.Server{Handler: root}
+	doStop := func() {
+		os.Remove(sock)
+		time.Sleep(100 * time.Millisecond) // 给内核冲刷应答的窗口，避免客户端读到 RST
+		os.Exit(0)                         // 无状态服务：profile 均已落盘，直接退出
+	}
+	var sig chan os.Signal
+	doRestart := func() {
+		gracefulRestart(tcpLn, ctlLn, httpSrv, *addr, sig)
+	}
+
+	if inherited {
+		// 子进程：fd 已绑定，通知父进程可以排水退出
+		if f := os.NewFile(5, "ready"); f != nil {
+			f.Write([]byte("ok"))
+			f.Close()
+		}
+		go http.Serve(ctlLn, ctlMux(*addr, version, sock, doStop, doRestart))
+		return httpSrv.Serve(tcpLn)
+	}
+
+	var err error
+	if tcpLn, err = net.Listen("tcp", *addr); err != nil {
+		return err
+	}
+	if ctlLn, err = listenCtl(sock, ctlMux(*addr, version, sock, doStop, doRestart)); err != nil {
+		return err
+	}
+
+	// SIGTERM/SIGINT 走与 ctl stop 相同的清理路径，kill 后不留 pid/addr/socket 垃圾
+	sig = make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		os.Remove(sock)
+		os.Exit(0)
+	}()
+
 	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\nMCP:    http://%s/mcp\n", *addr, *tmp, *base, *addr, *addr)
-	return http.ListenAndServe(*addr, h)
+	return httpSrv.Serve(tcpLn)
+}
+
+const inheritEnv = "PROFKIT_INHERIT_FDS"
+
+// gracefulRestart：把 TCP/ctl 监听 fd 传给重新拉起的自身进程，等子进程
+// 就绪后旧进程排水退出——监听不断、在途请求（如进行中的 CPU 采集）由
+// 旧进程处理完毕。fd 编号约定：3=TCP、4=ctl、5=ready 回执管道。
+func gracefulRestart(tcpLn, ctlLn net.Listener, srv *http.Server, addr string, sigCh chan os.Signal) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return
+	}
+	argv := make([]string, 0, len(os.Args)+2)
+	for i := 0; i < len(os.Args); i++ {
+		if os.Args[i] == "-l" { // 跳过旧的 -l 及其值
+			i++
+			continue
+		}
+		if strings.HasPrefix(os.Args[i], "-l=") {
+			continue
+		}
+		argv = append(argv, os.Args[i])
+	}
+	argv = append(argv, "-l", addr) // 钉住实际地址，自动选端口不漂移
+	tcpf, err := tcpLn.(*net.TCPListener).File()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return
+	}
+	ctlf, err := ctlLn.(*net.UnixListener).File()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return
+	}
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return
+	}
+	cmd := &exec.Cmd{
+		Path: exe, Args: argv,
+		Env:        append(envWithout(os.Environ(), inheritEnv), inheritEnv+"=3,4,5"),
+		ExtraFiles: []*os.File{tcpf, ctlf, readyW},
+		Stdout:     os.Stdout, Stderr: os.Stderr, // daemon 模式下即日志文件
+	}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return
+	}
+	readyW.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(readyR, make([]byte, 2))
+		readyR.Close()
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil { // 子进程未就绪：中止重启，旧进程继续服务，避免中断
+			cmd.Process.Kill()
+			fmt.Fprintln(os.Stderr, "restart: 子进程未就绪，已中止:", err)
+			return
+		}
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		fmt.Fprintln(os.Stderr, "restart: 子进程就绪超时，已中止")
+		return
+	}
+	// 移交完成：旧进程停止收 ctl（立即）与 TCP（排水后），退出
+	if sigCh != nil {
+		signal.Stop(sigCh) // 旧进程退出路径不再清理文件（那是子进程的了）
+	}
+	if ul, ok := ctlLn.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false) // socket 文件仍被子进程的继承 fd 绑定，不能 unlink
+	}
+	ctlLn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx) // 等在途请求完成（Serve 随即返回 ErrServerClosed）
+}
+
+func inheritListener(fd uintptr, name string) (net.Listener, error) {
+	return net.FileListener(os.NewFile(fd, name))
+}
+
+func envWithout(envs []string, key string) []string {
+	out := envs[:0:0]
+	for _, e := range envs {
+		if !strings.HasPrefix(e, key+"=") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// detach re-execs the serve command without -d in a new session, so the
+// child survives the terminal. Logs go to <storage>/profkit.log.
+func detach(args []string, tmp string) error {
+	argv := make([]string, 0, len(args)+1)
+	for _, a := range args { // 子进程必须以前台方式运行，去掉 -d
+		if a == "-d" || a == "--d" || a == "-d=true" {
+			continue
+		}
+		argv = append(argv, a)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logPath := filepath.Join(tmp, "profkit.log")
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.Command(exe, append([]string{"serve"}, argv...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout, cmd.Stderr = logf, logf
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	pid := cmd.Process.Pid
+	cmd.Process.Release()
+	fmt.Printf("profkit serve 已后台启动 pid=%d 日志=%s\n管控: profkit ctl status|stop|restart\n", pid, logPath)
+	return nil
 }
 
 func envOr(key, def string) string {

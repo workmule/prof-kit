@@ -34,6 +34,12 @@ go install github.com/<you>/prof-kit@profkit@latest
 # Web 服务（浏览器访问交互式 pprof UI）
 profkit serve
 
+# 后台启动 + 管控（unix socket 通道，不暴露网络端口）
+profkit serve -d
+profkit ctl status    # pid/addr/version
+profkit ctl restart   # fd 传递式优雅重启：监听不断，在途采集（如 CPU profile）跑完才退
+profkit ctl stop
+
 # MCP server（供 IDE / AI 客户端接入）
 profkit mcp
 

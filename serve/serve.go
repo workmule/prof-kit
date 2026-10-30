@@ -164,6 +164,11 @@ func Run(args []string, version string) error {
 	ctlSock := fs.String("ctl-sock", "", "unix socket path for ctl commands (default <storage>/profkit.sock); cli 侧用 profkit ctl -sock 对应")
 	fs.Parse(args)
 	core.MaxCPUSeconds = *maxSec
+	// 存储目录不存在则创建（首次部署/干净容器里 /tmp/pprof-web 不存在，
+	// ctl socket 与 profile 落盘都依赖它）
+	if err := os.MkdirAll(*tmp, 0o755); err != nil {
+		return fmt.Errorf("create storage dir %s: %w", *tmp, err)
+	}
 	rebuildViews(*tmp) // 重启后从存储目录重建 view 注册表，并清理超量旧文件
 
 	if *daemon {

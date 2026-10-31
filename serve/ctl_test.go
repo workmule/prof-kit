@@ -15,9 +15,9 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		if os.Getenv("TEST_READY") == "err" {
-			notifyReady(errors.New("listen tcp :8899: bind: mock conflict"))
+			notifyReady(errors.New("listen tcp :8899: bind: mock conflict"), "")
 		} else {
-			notifyReady(nil)
+			notifyReady(nil, "127.0.0.1:18899")
 		}
 		os.Exit(0)
 	}

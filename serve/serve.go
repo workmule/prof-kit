@@ -272,14 +272,14 @@ func Run(args []string, version string) error {
 
 	var err error
 	if tcpLn, err = net.Listen("tcp", *addr); err != nil {
-		notifyReady(err)
+		notifyReady(err, "")
 		return err
 	}
 	if ctlLn, err = listenCtl(sock, ctlMux(*addr, version, sock, doStop, doRestart)); err != nil {
-		notifyReady(err)
+		notifyReady(err, "")
 		return err
 	}
-	notifyReady(nil)
+	notifyReady(nil, displayAddr(*addr))
 
 	// SIGTERM/SIGINT 走与 ctl stop 相同的清理路径，kill 后不留 pid/addr/socket 垃圾
 	sig = make(chan os.Signal, 1)
@@ -322,8 +322,9 @@ const inheritEnv = "PROFKIT_INHERIT_FDS"
 // 子进程监听就绪后经 notifyReady 回写；前台直跑时该环境变量为空，无副作用。
 const readyFDEnv = "PROFKIT_READY_FD"
 
-// notifyReady 把启动结果（nil=就绪 / err=失败原因）回写给 detach 父进程。
-func notifyReady(err error) {
+// notifyReady 把启动结果回写给 detach 父进程：err!=nil 写 "err:<原因>"；
+// 就绪写 "ok <display>"（展示地址，父进程据此打印访问 URL，可为空）。
+func notifyReady(err error, display string) {
 	fdStr := os.Getenv(readyFDEnv)
 	if fdStr == "" {
 		return
@@ -339,7 +340,7 @@ func notifyReady(err error) {
 	if err != nil {
 		fmt.Fprintf(f, "err:%s", err)
 	} else {
-		io.WriteString(f, "ok")
+		fmt.Fprintf(f, "ok %s", display)
 	}
 	f.Close()
 }
@@ -420,6 +421,10 @@ func gracefulRestart(tcpLn, ctlLn net.Listener, srv *http.Server, addr string, s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx) // 等在途请求完成（Serve 随即返回 ErrServerClosed）
+	// 排水完成即退：UnixListener.Close 会等 accept 环节释放 fd 引用（实测
+	// 阻塞数十秒，期间旧 gen 仍应答 ctl 造成误报/多跳重启），进程退出由
+	// 内核兜底关闭全部 fd，语义与 ctl stop 的 os.Exit 一致。
+	os.Exit(0)
 }
 
 func inheritListener(fd uintptr, name string) (net.Listener, error) {
@@ -483,7 +488,11 @@ func detach(args []string, tmp string) error {
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
-	fmt.Printf("profkit serve 已后台启动 pid=%d 日志=%s\n管控: profkit ctl status|stop|restart\n", pid, logPath)
+	fmt.Printf("profkit serve 已后台启动 pid=%d 日志=%s\n", pid, logPath)
+	if display := strings.TrimSpace(string(out[2:])); display != "" {
+		fmt.Printf("web UI: http://%s/\nMCP:    http://%s/mcp\n", display, display)
+	}
+	fmt.Printf("管控: profkit ctl status|stop|restart\n")
 	return nil
 }
 

@@ -14,9 +14,9 @@ func TestDisplayAddr(t *testing.T) {
 	}{
 		{"127.0.0.1:9000", "127.0.0.1:9000", false}, // 显式 host 原样
 		{"localhost:9000", "localhost:9000", false}, // 显式 host 原样
-		{":37449", local + ":37449", true},      // 空 host 补本机 IP，保留端口
-		{"0.0.0.0:8080", local + ":8080", true}, // 通配地址补本机 IP
-		{"[::]:8080", local + ":8080", true},    // IPv6 通配替换为 IPv4 本机 IP（无方括号）
+		{":37449", local + ":37449", true},          // 空 host 补本机 IP，保留端口
+		{"0.0.0.0:8080", local + ":8080", true},     // 通配地址补本机 IP
+		{"[::]:8080", local + ":8080", true},        // IPv6 通配替换为 IPv4 本机 IP（无方括号）
 		{"no-port", "no-port", false},               // 非法地址原样返回
 	}
 	for _, c := range cases {

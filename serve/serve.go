@@ -80,6 +80,16 @@ code{background:#f2f3f5;padding:2px 6px;border-radius:4px;font-size:12px;word-br
   <span id="status"></span>
 </form>
 <script>
+// 采集跳走后返回时页面可能是缓存快照（bfcache 或磁盘缓存），重载刷新已采集列表；
+// sessionStorage 标记防普通加载误触发 reload 死循环
+function pkBackRefresh(){
+  if (sessionStorage.getItem('pk_jumped')) {
+    sessionStorage.removeItem('pk_jumped');
+    location.reload();
+  }
+}
+pkBackRefresh();
+window.addEventListener('pageshow', pkBackRefresh);
 document.forms[0].addEventListener('submit', function(ev){
   ev.preventDefault();
   var form = this, b = form.querySelector('button');
@@ -99,7 +109,7 @@ document.forms[0].addEventListener('submit', function(ev){
     .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
     .then(function(res){
       clearInterval(t);
-      if (res.ok && res.d.url) { location.href = res.d.url; return; }
+      if (res.ok && res.d.url) { sessionStorage.setItem('pk_jumped', '1'); location.href = res.d.url; return; }
       b.disabled = false;
       st.textContent = '❌ 采集失败';
       alert('采集失败：\n' + (res.d.error || ('HTTP ' + res.ok)));
@@ -282,7 +292,7 @@ func Run(args []string, version string) error {
 }
 
 // displayAddr 把监听地址转成可直接点击的展示地址（host:port）：空 host
-//（如 ":37449"）或通配地址补成本机出口 IP（仅选路由不发包），失败回退 127.0.0.1。
+// （如 ":37449"）或通配地址补成本机出口 IP（仅选路由不发包），失败回退 127.0.0.1。
 func displayAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

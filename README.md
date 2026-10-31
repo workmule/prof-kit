@@ -64,7 +64,7 @@ go tool pprof http://<ip>:<port>/debug/pprof/heap
 
 | Flag | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|
-| `-l` | `PPROF_LISTEN_ADDRESS` | `:8080` | 监听地址 |
+| `-l` | `PPROF_LISTEN_ADDRESS` | 空（挑空闲端口，绑 0.0.0.0） | 监听地址 |
 | `-t` | `PPROF_TMP_PATH` | `/tmp/pprof-web` | profile 存储目录 |
 | `-b` | `PPROF_BASE_PATH` | `/` | 反向代理部署时的 base path |
 

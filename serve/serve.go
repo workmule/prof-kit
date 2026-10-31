@@ -156,7 +156,7 @@ func setCookie(w http.ResponseWriter, name, val string) {
 // MCP server mounted at /mcp.
 func Run(args []string, version string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("l", envOr("PPROF_LISTEN_ADDRESS", ""), `listen address (empty = auto-pick a free port, bound to localhost)`)
+	addr := fs.String("l", envOr("PPROF_LISTEN_ADDRESS", ""), `listen address (empty = auto-pick a free port, bound to all interfaces)`)
 	tmp := fs.String("t", envOr("PPROF_TMP_PATH", "/tmp/pprof-web"), "profile storage dir")
 	base := fs.String("b", envOr("PPROF_BASE_PATH", "/"), "base path when behind a reverse proxy")
 	maxSec := fs.Int("max-cpu-seconds", core.MaxCPUSeconds, "max CPU profile seconds")
@@ -179,13 +179,13 @@ func Run(args []string, version string) error {
 	}
 
 	if *addr == "" {
-		// 同 ui 包的做法：新版环境里写死端口易冲突，未显式指定就挑空闲端口。
-		// 对外统一显示 localhost（Addr() 会给 127.0.0.1，语义相同但难读）
-		l, err := net.Listen("tcp", "localhost:0")
+		// 未指定 -l：挑空闲端口但绑全部网卡（":0" = 0.0.0.0 随机端口），
+		// 容器/远程访问可用；本地开发同理，只是端口随机
+		l, err := net.Listen("tcp", ":0")
 		if err != nil {
 			return err
 		}
-		*addr = fmt.Sprintf("localhost:%d", l.Addr().(*net.TCPAddr).Port)
+		*addr = fmt.Sprintf(":%d", l.Addr().(*net.TCPAddr).Port)
 		l.Close()
 	}
 
@@ -276,8 +276,30 @@ func Run(args []string, version string) error {
 		os.Exit(0)
 	}()
 
-	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\nMCP:    http://%s/mcp\n", *addr, *tmp, *base, *addr, *addr)
+	display := displayAddr(*addr)
+	fmt.Printf("profkit serve on %s (storage %s, base %s)\nweb UI: http://%s/\nMCP:    http://%s/mcp\n", *addr, *tmp, *base, display, display)
 	return httpSrv.Serve(tcpLn)
+}
+
+// displayAddr 把监听地址转成可直接点击的展示地址（host:port）：空 host
+//（如 ":37449"）或通配地址补成本机出口 IP（仅选路由不发包），失败回退 127.0.0.1。
+func displayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = localIP()
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func localIP() string {
+	if c, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer c.Close()
+		return c.LocalAddr().(*net.UDPAddr).IP.String()
+	}
+	return "127.0.0.1"
 }
 
 const inheritEnv = "PROFKIT_INHERIT_FDS"

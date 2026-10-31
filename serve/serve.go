@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -271,11 +272,14 @@ func Run(args []string, version string) error {
 
 	var err error
 	if tcpLn, err = net.Listen("tcp", *addr); err != nil {
+		notifyReady(err)
 		return err
 	}
 	if ctlLn, err = listenCtl(sock, ctlMux(*addr, version, sock, doStop, doRestart)); err != nil {
+		notifyReady(err)
 		return err
 	}
+	notifyReady(nil)
 
 	// SIGTERM/SIGINT 走与 ctl stop 相同的清理路径，kill 后不留 pid/addr/socket 垃圾
 	sig = make(chan os.Signal, 1)
@@ -313,6 +317,32 @@ func localIP() string {
 }
 
 const inheritEnv = "PROFKIT_INHERIT_FDS"
+
+// readyFDEnv：detach 父进程传给子进程的环境变量，值为 ready 管道的 fd 编号。
+// 子进程监听就绪后经 notifyReady 回写；前台直跑时该环境变量为空，无副作用。
+const readyFDEnv = "PROFKIT_READY_FD"
+
+// notifyReady 把启动结果（nil=就绪 / err=失败原因）回写给 detach 父进程。
+func notifyReady(err error) {
+	fdStr := os.Getenv(readyFDEnv)
+	if fdStr == "" {
+		return
+	}
+	n, convErr := strconv.Atoi(fdStr)
+	if convErr != nil {
+		return
+	}
+	f := os.NewFile(uintptr(n), "ready")
+	if f == nil {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(f, "err:%s", err)
+	} else {
+		io.WriteString(f, "ok")
+	}
+	f.Close()
+}
 
 // gracefulRestart：把 TCP/ctl 监听 fd 传给重新拉起的自身进程，等子进程
 // 就绪后旧进程排水退出——监听不断、在途请求（如进行中的 CPU 采集）由
@@ -426,11 +456,30 @@ func detach(args []string, tmp string) error {
 		return err
 	}
 	defer logf.Close()
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer readyR.Close()
 	cmd := exec.Command(exe, append([]string{"serve"}, argv...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout, cmd.Stderr = logf, logf
+	// ready 管道：子进程监听就绪回写 ok、失败回写错误文本，父进程据此
+	// 报启动成功/失败（端口冲突等不再"假启动成功"）。ExtraFiles 从 fd 3 起。
+	cmd.Env = append(os.Environ(), readyFDEnv+"=3")
+	cmd.ExtraFiles = []*os.File{readyW}
 	if err := cmd.Start(); err != nil {
+		readyW.Close()
 		return err
+	}
+	readyW.Close()
+	out, _ := io.ReadAll(readyR)
+	if !bytes.HasPrefix(out, []byte("ok")) {
+		msg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(out)), "err:"))
+		if msg == "" {
+			msg = "子进程异常退出（详见日志）"
+		}
+		return fmt.Errorf("serve 启动失败: %s（日志 %s）", msg, logPath)
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release()
